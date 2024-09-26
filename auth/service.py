@@ -62,3 +62,38 @@ class AuthService:
         except ClientError as e:
             error_message = e.response['Error']['Message']
             return JsonResponse({"error": error_message}, status=400)
+
+    # metodo para poder loguearse
+    def login_user(self, email, password):
+        try:
+            # Autenticar con Cognito
+            response = cognito_client.initiate_auth(
+                ClientId=os.getenv('COGNITO_CLIENT_ID'),
+                AuthFlow='USER_PASSWORD_AUTH',
+                AuthParameters={
+                    'USERNAME': email,
+                    'PASSWORD': password,
+                },
+            )
+            # Obtener el usuario de Cognito
+            user_info = cognito_client.get_user(
+                AccessToken=response['AuthenticationResult']['AccessToken']
+            )
+            # Buscar el atributo name
+            name = None
+            for atribute in user_info['UserAttributes']:
+                if atribute['Name'] == 'name':
+                    name = atribute['Value']
+
+            # Si la autenticación es exitosa, devolvemos los tokens
+            return JsonResponse({
+                'access_token': response['AuthenticationResult']['AccessToken'],
+                'id_token': response['AuthenticationResult']['IdToken'],
+                'refresh_token': response['AuthenticationResult']['RefreshToken'],
+                'name': name
+            }, status=200)
+
+        except ClientError as e:
+            # Si hay algún error (usuario incorrecto, contraseña incorrecta, etc.)
+            error_message = e.response['Error']['Message']
+            return JsonResponse({"error": error_message}, status=400)
