@@ -1,99 +1,174 @@
-from auth.repository import AuthRepository
-import boto3
-from botocore.exceptions import ClientError
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-
 import os
 
-cognito_client = boto3.client('cognito-idp', os.getenv('AWS_REGION'))
+import boto3
+from botocore.client import BaseClient
+from botocore.exceptions import ClientError
+
+from auth.repository import AuthRepository
+
+cognito_client: BaseClient = boto3.client("cognito-idp", os.getenv("AWS_REGION"))
 
 
 class AuthService:
     def __init__(self):
         self.repository = AuthRepository()
 
-    # Función para registrar un nuevo usuario en Cognito
-    def register_user(self, email, password, name):
+    def register_user(self, email: str, password: str, name: str) -> dict:
+        """
+        Función para registrar un usuario en Cognito
+        :param email: Email del usuario
+        :param password: Contraseña del usuario
+        :param name: Nombre completo del usuario
+        """
         try:
             response = cognito_client.sign_up(
-                ClientId=os.getenv('COGNITO_CLIENT_ID'),
+                ClientId=os.getenv("COGNITO_CLIENT_ID"),
                 Username=email,
                 Password=password,
-                UserAttributes=[
-                    {
-                        'Name': 'email',
-                        'Value': email
-                    },
-                    {
-                        'Name': 'name',  # El nombre completo requerido
-                        'Value': name
-                    }
-                ]
+                UserAttributes=[{"Name": "email", "Value": email}, {"Name": "name", "Value": name}],  # El nombre completo requerido
             )
-
-            return JsonResponse(response)
+            self.repository.create_user(email, name)
+            return response
         except ClientError as e:
-            error_message = e.response['Error']['Message']
-            return JsonResponse({"error": error_message}, status=400)
+            error_message = e.response["Error"]["Message"]
+            return {"error": error_message}
 
         # Función para confirmar el código de verificación
 
-    def confirm_user_signup(self, email, confirmation_code):
+    def confirm_user_signup(self, email: str, confirmation_code: str) -> dict:
+        """
+        Función para confirmar el registro del usuario
+        :param email: Email del usuario
+        :param confirmation_code: Código de confirmación enviado al correo
+        """
         try:
             response = cognito_client.confirm_sign_up(
-                ClientId=os.getenv('COGNITO_CLIENT_ID'),
-                Username=email,
-                ConfirmationCode=confirmation_code
+                ClientId=os.getenv("COGNITO_CLIENT_ID"), Username=email, ConfirmationCode=confirmation_code
             )
-            return JsonResponse(response)
+            return response
         except ClientError as e:
-            error_message = e.response['Error']['Message']
-            return JsonResponse({"error": error_message}, status=400)
+            error_message = e.response["Error"]["Message"]
+            return {"error": error_message}
 
-    # Función que maneja la llamada a Cognito para reenviar el código de confirmación
-    def resend_confirmation_code_to_user(self, email):
+    def resend_confirmation_code_to_user(self, email: str) -> dict:
+        """
+        Función para reenviar el código de confirmación al usuario
+        :param email: Email del usuario
+        """
         try:
-            response = cognito_client.resend_confirmation_code(
-                ClientId=os.getenv('COGNITO_CLIENT_ID'),
-                Username=email
-            )
-            return {'message': 'El código de confirmación ha sido reenviado al correo.'}
+            cognito_client.resend_confirmation_code(ClientId=os.getenv("COGNITO_CLIENT_ID"), Username=email)
+            return {"message": "El código de confirmación ha sido reenviado al correo."}
         except ClientError as e:
-            error_message = e.response['Error']['Message']
-            return JsonResponse({"error": error_message}, status=400)
+            error_message = e.response["Error"]["Message"]
+            return {"error": error_message}
 
-    # metodo para poder loguearse
-    def login_user(self, email, password):
+    def login_user(self, email: str, password: str) -> dict:
+        """
+        Función para autenticar al usuario
+        :param email: Email del usuario
+        :param password: Contraseña del usuario
+        :return: Tokens de autenticación si el usuario es válido
+        """
         try:
+            if self.repository.get_counter(email) >= 5:
+                return {"bloqued": "Demasiados intentos de inicio de sesión. Por su seguridad ambie la contraseña."}
             # Autenticar con Cognito
             response = cognito_client.initiate_auth(
-                ClientId=os.getenv('COGNITO_CLIENT_ID'),
-                AuthFlow='USER_PASSWORD_AUTH',
+                ClientId=os.getenv("COGNITO_CLIENT_ID"),
+                AuthFlow="USER_PASSWORD_AUTH",
                 AuthParameters={
-                    'USERNAME': email,
-                    'PASSWORD': password,
+                    "USERNAME": email,
+                    "PASSWORD": password,
                 },
             )
-            # Obtener el usuario de Cognito
-            user_info = cognito_client.get_user(
-                AccessToken=response['AuthenticationResult']['AccessToken']
-            )
-            # Buscar el atributo name
-            name = None
-            for atribute in user_info['UserAttributes']:
-                if atribute['Name'] == 'name':
-                    name = atribute['Value']
-
-            # Si la autenticación es exitosa, devolvemos los tokens
-            return JsonResponse({
-                'access_token': response['AuthenticationResult']['AccessToken'],
-                'id_token': response['AuthenticationResult']['IdToken'],
-                'refresh_token': response['AuthenticationResult']['RefreshToken'],
-                'name': name
-            }, status=200)
+            user_info = cognito_client.get_user(AccessToken=response["AuthenticationResult"]["AccessToken"])
+            name = [attribute for attribute in user_info["UserAttributes"] if attribute["Name"] == "name"][0]["Value"]
+            self.repository.reset_counter(email)
+            return {
+                "access_token": response["AuthenticationResult"]["AccessToken"],
+                "id_token": response["AuthenticationResult"]["IdToken"],
+                "refresh_token": response["AuthenticationResult"]["RefreshToken"],
+                "name": name,
+            }
 
         except ClientError as e:
-            # Si hay algún error (usuario incorrecto, contraseña incorrecta, etc.)
-            error_message = e.response['Error']['Message']
-            return JsonResponse({"error": error_message}, status=400)
+            error_message = e.response["Error"]["Message"]
+            self.repository.increment_counter(email)
+            return {"error": error_message}
+
+    def refresh_cognito_token(self, refresh_token: str) -> dict:
+        """
+        Función para refrescar el token de autenticación
+        :param refresh_token: Token de refresco
+        :return: Tokens de autenticación si el token de refresco es válido
+        """
+        response = cognito_client.initiate_auth(
+            ClientId=os.getenv("COGNITO_CLIENT_ID"),
+            AuthFlow="REFRESH_TOKEN_AUTH",
+            AuthParameters={
+                "REFRESH_TOKEN": refresh_token,
+            },
+        )
+
+        return response["AuthenticationResult"]
+
+    def logout(self, access_token: str) -> None:
+        """
+        Función para cerrar sesión
+        :param access_token: Token de acceso
+        """
+        try:
+            # Llamar a globalSignOut para invalidar todos los tokens asociados al usuario
+            cognito_client.global_sign_out(AccessToken=access_token)
+        except ClientError as e:
+            print(e)
+
+    def change_password(self, access_token: str, password: str, old_password: str) -> dict:
+        """
+        Función para cambiar la contraseña del usuario
+        :param access_token: Email del usuario
+        :param password: Nueva contraseña
+        :param old_password: Contraseña actual
+        """
+        try:
+            response = cognito_client.change_password(
+                PreviousPassword=old_password,
+                ProposedPassword=password,
+                AccessToken=access_token,
+            )
+            return response
+        except ClientError as e:
+            error_message = e.response["Error"]["Message"]
+            return {"error": error_message}
+
+    def forgot_password(self, email: str) -> dict:
+        """
+        Función cuando el usuario se olvido la contraseña
+        :param email: Email del usuario
+        """
+        try:
+            response = cognito_client.forgot_password(
+                ClientId=os.getenv("COGNITO_CLIENT_ID"),
+                Username=email,
+            )
+            return response
+        except ClientError as e:
+            error_message = e.response["Error"]["Message"]
+            return {"error": error_message}
+
+    def confirm_forgot_password(self, email: str, confirmation_code: str, new_password: str) -> dict:
+        """
+        Función para modificar contraseña con codigo de verificacion
+        :param1 email: Email del usuario
+        :param2 confirmation_code: Codigo de verificacion del correo
+        :param1 new_password: Nueva contraseña
+        """
+        try:
+            response = cognito_client.confirm_forgot_password(
+                ClientId=os.getenv("COGNITO_CLIENT_ID"), Username=email, ConfirmationCode=confirmation_code, Password=new_password
+            )
+            self.repository.reset_counter(email)
+            return response
+        except ClientError as e:
+            error_message = e.response["Error"]["Message"]
+            return {"error": error_message}
