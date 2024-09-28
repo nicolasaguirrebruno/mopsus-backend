@@ -97,3 +97,26 @@ class AuthService:
             # Si hay algún error (usuario incorrecto, contraseña incorrecta, etc.)
             error_message = e.response['Error']['Message']
             return JsonResponse({"error": error_message}, status=400)
+
+    def refresh_cognito_token(self, refresh_token):
+        # Llamar a la API para refrescar el token
+        response = cognito_client.initiate_auth(
+            ClientId=os.getenv('COGNITO_CLIENT_ID'),
+            AuthFlow='REFRESH_TOKEN_AUTH',
+            AuthParameters={
+                'REFRESH_TOKEN': refresh_token,
+            }
+        )
+
+        return response['AuthenticationResult']
+
+    def logout(self, access_token):
+        try:
+            # Llamar a globalSignOut para invalidar todos los tokens asociados al usuario
+            cognito_client.global_sign_out(
+                AccessToken=access_token
+            )
+            print(222222)
+        except ClientError as e:
+            print(e)
+

@@ -37,6 +37,32 @@ class AuthView(views.View):
 
         return JsonResponse({"error": "Método no permitido"}, status=405)
 
+    @csrf_exempt
+    def refresh_token(self, request):
+        if request.method == 'POST':
+            try:
+                data = json.loads(request.body)
+                refresh_token = data.get('refresh_token')
+
+                if not refresh_token:
+                    return JsonResponse({'error': 'Refresh token is required'}, status=400)
+
+                # Llamar a la función de utilidad para refrescar el token
+                auth_result = self.service.refresh_cognito_token(refresh_token)
+
+                # Retornar el nuevo id token y access token, el refresh token sigue siendo valido despues de usarlo.
+                return JsonResponse({
+                    'access_token': auth_result['AccessToken'],
+                    'id_token': auth_result['IdToken'],
+                })
+
+            except boto3.client('cognito-idp').exceptions.NotAuthorizedException:
+                return JsonResponse({'error': 'Refresh token'}, status=401)
+            except Exception as e:
+                return JsonResponse({'error': str(e)}, status=500)
+        else:
+            return JsonResponse({'error': 'Request method no valido'}, status=405)
+
     # Endpoint para registrar un nuevo usuario
     @csrf_exempt
     def register_user(self, request):
@@ -101,3 +127,21 @@ class AuthView(views.View):
 
         else:
             return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+    @csrf_exempt
+    def logout(self, request):
+        try:
+            # Obtener el access_token del request
+            data = json.loads(request.body)
+            access_token = data.get('access_token')
+
+            if not access_token:
+                return JsonResponse({'error': 'Access token is required'}, 400)
+
+            self.service.logout(access_token)
+
+            return JsonResponse({'message': 'Logout successful'}, status=200)
+
+
+        except ClientError as e:
+            return JsonResponse({'error': str(e)}, 400)
